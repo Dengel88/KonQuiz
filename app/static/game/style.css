@@ -464,3 +464,8 @@ body[data-screen="lobby"] #bg-video, body[data-screen="search"] #bg-video { opac
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
+
+/* Башни замка (классика Конкизтадора: 3 «жизни» у замка) */
+.pcard-count .towers { margin-left: 3px; font-size: 9px; letter-spacing: -1px; color: #ffd56a; text-shadow: 0 0 4px rgba(255, 190, 80, .6); }
+.duel-towers { margin-left: 4px; font-size: 12px; letter-spacing: -1px; color: #ffd56a; }
+.cap-icon .tower.down { opacity: .55; }

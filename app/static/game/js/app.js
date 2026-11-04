@@ -4,8 +4,6 @@ import { api, GameSocket, tg } from "./net.js";
 import { MapView, colorHex, thumbnail } from "./map.js";
 
 const $ = (id) => document.getElementById(id);
-const CAPITAL_BONUS = 400;  // = Settings.capital_bonus на сервере; только для живого счёта в HUD
-const ROUNDS = 5;           // = Settings.battle_rounds
 const HINTS = {
   "50_50": { title: "50/50", cost: 15, icon: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 3v18" stroke="currentColor" stroke-width="2"/><path d="M12 3a9 9 0 0 1 0 18z" fill="currentColor"/></svg>' },
   freeze: { title: "+10 с", cost: 20, icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 2v20M3.3 7l17.4 10M3.3 17 20.7 7"/><path d="m9 4 3 2 3-2M9 20l3-2 3 2"/></svg>' },
@@ -93,16 +91,13 @@ const nameOf = (pid) => {
 const shield = (pid, text = "") => `<span class="shield" style="--c:${colorOf(pid)}">${esc(text)}</span>`;
 // держава игрока — по региону его столицы («Московское княжество»); до выбора столицы пусто
 const realmOf = (pid, s = ui.S) => {
-  const tid = s?.capitals[pid];
+  const tid = s?.capitals[pid] ?? ui.capHist?.[pid];  // разрушенный замок — держава всё равно остаётся в итогах
   return tid != null ? ui.map?.byId.get(tid)?.realm || "" : "";
 };
 const ownedBy = (pid) => Object.entries(ui.S.territories).filter(([, o]) => o === +pid).map(([t]) => +t);
 
-function liveScore(pid) {
-  const byId = ui.map?.byId;
-  const base = ownedBy(pid).reduce((sum, t) => sum + (byId?.get(t)?.base_points ?? 200), 0);
-  return base + (ui.S.capitals[pid] != null ? CAPITAL_BONUS : 0);
-}
+// Счёт ведёт сервер: замок 1000, земля 200, захват +400, оборона +100, руины замка — ±1000
+const liveScore = (pid) => Math.max(0, ui.S.players[pid]?.score ?? 0);
 
 function send(obj) {
   haptic.tap();
@@ -239,6 +234,8 @@ function setState(s) {
   const prev = ui.S;
   ui.S = s;
   ui.skew = s.server_time - Date.now() / 1000;
+  if (ui.capMatch !== s.match_id) { ui.capMatch = s.match_id; ui.capHist = {}; }
+  Object.assign(ui.capHist, s.capitals);
   if (s.phase !== ui.phaseForLocal) {
     ui.phaseForLocal = s.phase;
     ui.src = null;
@@ -332,13 +329,20 @@ function renderSearch() {
 
 function phaseTitle(s) {
   switch (s.state_name) {
-    case "CAPITAL_SELECTION": return "Битва за столицы";
-    case "CAPITAL_PICK": return s.picker_tg_id === ui.me ? "Выберите столицу" : `${nameOf(s.picker_tg_id)} выбирает столицу`;
     case "EXPANSION": return "Раздел земель";
-    case "EXPANSION_PICK": return s.picker_tg_id === ui.me ? "Выберите землю" : `${nameOf(s.picker_tg_id)} занимает землю`;
+    case "EXPANSION_PICK": {
+      const more = (s.pick_queue || []).filter((p) => p === s.picker_tg_id).length;
+      const tail = more ? " (ещё одну после)" : "";
+      return s.picker_tg_id === ui.me ? `Выберите землю${tail}` : `${nameOf(s.picker_tg_id)} занимает землю${tail}`;
+    }
     case "BATTLE_WAIT": return s.current_turn_tg_id === ui.me ? "Ваш ход: нападайте!" : `${nameOf(s.current_turn_tg_id)} выбирает цель`;
-    case "BATTLE_QUESTION": return "Битва!";
+    case "BATTLE_QUESTION": {
+      const b = s.battle;
+      const castle = b && s.capitals[b.defender] === b.target;
+      return castle ? `Штурм замка: башен ${s.towers[b.defender]}` : "Битва!";
+    }
     case "BATTLE_TIEBREAKER": return "Решающий вопрос";
+    case "FINAL_TIEBREAKER": return "Очков поровну — финальный вопрос";
     case "REVEAL": return "Итоги";
     case "REALM_REVEAL": return "Основана держава";
     default: return s.state_name;
@@ -361,7 +365,7 @@ function render() {
 // Камера: мой выбор — наезд на допустимые земли; бой — на двух участников; иначе вся карта
 function fitMap(s, options) {
   let ids = null;
-  if (options.size) ids = [...options, ...(ui.src ? [ui.src] : [])];
+  if (options.size) ids = [...options];
   else if (s.battle) ids = [s.battle.source, s.battle.target];
   else if (s.state_name === "REVEAL" && s.last_result?.battle) ids = [s.last_result.battle.source, s.last_result.battle.target];
   const svg = $("map"), sheet = $("m-sheet");
@@ -373,9 +377,9 @@ function fitMap(s, options) {
 // Трекер раундов: этап + 5 ячеек, в каждой — полоски очерёдности ходов цветами игроков
 function renderTracker(s) {
   const capitalsLeft = Object.keys(s.capitals).length < Object.keys(s.players).length;
-  const stage = s.round ? "Битва" : capitalsLeft ? "Столицы" : "Завоевание";
+  const stage = s.round ? (s.round >= s.rounds_total ? "Финал" : "Битва") : capitalsLeft ? "Замки" : "Завоевание";
   const order = s.turn_order.length ? s.turn_order : Object.keys(s.players).map(Number);
-  const cells = Array.from({ length: ROUNDS }, (_, i) => {
+  const cells = Array.from({ length: s.rounds_total || 4 }, (_, i) => {
     const r = i + 1;
     const state = !s.round || r > s.round ? "future" : r < s.round ? "past" : "now";
     const bars = order.map((pid, k) => {
@@ -420,7 +424,7 @@ function renderHud(s) {
     c.realm.textContent = realmOf(pid) || "без столицы";
     c.realm.classList.toggle("none", !realmOf(pid));
     c.mark.textContent = s.answers[pid] ? "✓" : !p.connected ? "⌁" : p.is_bot ? "⚙" : "";
-    c.count.innerHTML = `${ownedBy(pid).length}<small>зем.</small>${s.capitals[pid] != null ? '<b class="cap-dot" title="Столица"></b>' : ""}`;
+    c.count.innerHTML = `${ownedBy(pid).length}<small>зем.</small>${s.capitals[pid] != null ? `<b class="cap-dot" title="Замок: башен ${s.towers?.[pid] ?? 0}"></b><small class="towers">${"♜".repeat(s.towers?.[pid] ?? 0)}</small>` : ""}`;
     odometer(c.odo, liveScore(pid));
   }
 }
@@ -442,27 +446,19 @@ function renderBanner(s) {
   const b = $("m-banner");
   let text = "";
   if (s.state_name === "BATTLE_WAIT" && s.current_turn_tg_id === ui.me) {
-    text = ui.src ? "Теперь цель — соседняя вражеская земля" : "Выберите свою землю, откуда ударить";
-  } else if ((s.state_name === "CAPITAL_PICK" || s.state_name === "EXPANSION_PICK") && s.picker_tg_id === ui.me) {
+    const r = s.round, last = s.rounds_total;
+    text = r >= last ? "Последний раунд: бейте любую землю!" : r <= 1 ? "Атакуйте соседнюю землю (замки — со 2-го раунда)" : "Атакуйте соседнюю землю или замок";
+  } else if (s.state_name === "EXPANSION_PICK" && s.picker_tg_id === ui.me) {
     text = "Нажмите на подсвеченную землю";
   }
   b.hidden = !text;
   b.textContent = text;
 }
 
-function attackSources(s) {
-  const t = s.territories;
-  return new Set([...ui.map.byId.values()]
-    .filter((x) => t[x.territory_id] === ui.me && x.neighbors.some((n) => t[n] != null && t[n] !== ui.me))
-    .map((x) => x.territory_id));
-}
-
 function mapOptions(s) {
   if (s.picker_tg_id === ui.me) return new Set(s.pick_options);
   if (s.state_name === "BATTLE_WAIT" && s.current_turn_tg_id === ui.me) {
-    const t = s.territories;
-    if (ui.src) return new Set(ui.map.byId.get(ui.src).neighbors.filter((n) => t[n] != null && t[n] !== ui.me));
-    return attackSources(s);  // источники — свои земли, у которых есть вражеский сосед
+    return new Set(s.attack_targets || []);  // цели считает сервер по правилам раунда
   }
   return new Set();
 }
@@ -476,19 +472,9 @@ function onMapTap(hitId, snap) {
     return;
   }
   if (s.state_name !== "BATTLE_WAIT" || s.current_turn_tg_id !== ui.me) return;
-  // своя земля (точное попадание) — смена источника; иначе — ближайшая допустимая цель
-  if (hitId != null && s.territories[hitId] === ui.me) {
-    ui.src = attackSources(s).has(hitId) ? hitId : null;
-    haptic.tap();
-    return render();
-  }
-  if (!ui.src) {
-    const src = snap(attackSources(s));
-    if (src != null) { ui.src = src; haptic.tap(); render(); }
-    return;
-  }
+  // как в оригинале — один тап по цели; откуда ударить, решает сервер
   const tgt = snap(mapOptions(s));
-  if (tgt != null) send({ action: "attack", source_territory: ui.src, target_territory: tgt });
+  if (tgt != null) send({ action: "attack", target_territory: tgt });
 }
 
 // ---------------------------------------------------------------- листок вопроса / итогов
@@ -498,9 +484,10 @@ function renderDuel(s, battle) {
   duel.hidden = !battle;
   if (!battle) return;
   const isCap = s.capitals[battle.defender] === battle.target;
+  const towers = isCap ? s.towers?.[battle.defender] ?? 0 : 0;
   duel.innerHTML = `<span class="duel-side atk" style="--c:${colorOf(battle.attacker)}">${esc(nameOf(battle.attacker))}</span>
     <span class="duel-chev" aria-hidden="true"></span>
-    <span class="duel-side def" style="--c:${colorOf(battle.defender)}">${esc(nameOf(battle.defender))}${isCap ? '<b class="duel-cap" title="Столица"></b>' : ""}</span>`;
+    <span class="duel-side def" style="--c:${colorOf(battle.defender)}">${esc(nameOf(battle.defender))}${isCap ? `<b class="duel-cap" title="Замок"></b><span class="duel-towers" title="Башен осталось">${"♜".repeat(towers)}</span>` : ""}</span>`;
 }
 
 function renderSheet(s) {
@@ -597,9 +584,12 @@ function renderReveal(r) {
 
   let outcome = "";
   if (r.outcome === "tiebreaker") outcome = "Оба правы — решающий вопрос!";
-  else if (r.outcome === "captured") outcome = `${nameOf(r.battle.attacker)} ${r.battle.attacker === ui.me ? "захватили" : "захватывает"} землю!`;
-  else if (r.outcome === "defended") outcome = `${nameOf(r.battle.defender)} ${r.battle.defender === ui.me ? "отстояли" : "отстоял"} землю`;
-  else if (r.winner != null && r.kind === "capital_question") outcome = `${nameOf(r.winner)} ${r.winner === ui.me ? "выбираете" : "выбирает"} столицу`;
+  else if (r.outcome === "captured") outcome = `${nameOf(r.battle.attacker)} ${r.battle.attacker === ui.me ? "захватили" : "захватывает"} землю: +${fmt(r.points)}`;
+  else if (r.outcome === "tower_down") outcome = `Башня пала! Осталось ${r.towers_left} — штурм продолжается`;
+  else if (r.outcome === "castle_destroyed") outcome = `Замок разрушен! ${nameOf(r.battle.attacker)} ${r.battle.attacker === ui.me ? "забираете" : "забирает"} всё: +${fmt(r.points)}`;
+  else if (r.outcome === "defended") outcome = `${nameOf(r.battle.defender)} ${r.battle.defender === ui.me ? "отстояли" : "отстоял"} землю${r.bonus ? ` (+${r.bonus} за оборону)` : ""}`;
+  else if (r.kind === "final_tiebreaker" && r.winner != null) outcome = `${nameOf(r.winner)} ${r.winner === ui.me ? "побеждаете" : "побеждает"} в финальном вопросе!`;
+  else if (r.picks) outcome = Object.entries(r.picks).map(([pid, n]) => `${nameOf(pid)} ${+pid === ui.me ? "берёте" : "берёт"} ${n === 1 ? "1 землю" : `${n} земли`}`).join(", ");
   else if (r.winner != null) outcome = `${nameOf(r.winner)} ${r.winner === ui.me ? "занимаете" : "занимает"} землю`;
   if (outcome) html += `<div class="reveal-outcome">${esc(outcome)}</div>`;
   if (r.fact) html += `<div class="reveal-fact">${esc(r.fact)}</div>`;
@@ -653,7 +643,7 @@ function showEnd(final) {
       <span class="num">${r.place}</span>${shield(r.tg_id, r.territories)}
       <div class="place-name">${esc(r.tg_id === ui.me ? "Вы" : p?.username || r.tg_id)}${r.is_bot ? " ⚙" : ""}
         ${realmOf(r.tg_id) ? `<small>${esc(realmOf(r.tg_id))}</small>` : ""}</div>
-      <div class="score"><b>${fmt(r.score)}</b><small>${r.territories} зем.${s?.capitals[r.tg_id] != null ? " + столица" : ""}</small></div></div>`;
+      <div class="score"><b>${fmt(r.score)}</b><small>${r.territories} зем.${s?.capitals[r.tg_id] != null ? " + замок" : s?.players[r.tg_id]?.eliminated ? " · замок пал" : ""}</small></div></div>`;
   }).join("");
   $("end-rewards").innerHTML = mine
     ? `<span><i class="ico ico-gold"></i>+${mine.gold}</span><span><i class="ico ico-xp"></i>+${mine.xp}</span>`

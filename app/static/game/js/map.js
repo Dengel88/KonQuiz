@@ -20,7 +20,7 @@ export const PALETTE = {
 export const colorHex = (name) => PALETTE[name]?.[1] || "#8a7050";
 
 // Золотая башня столицы (как в референсе — золото, а цвет владельца даёт табличка с ником)
-function castle(u) {
+function castle(u, towers = 3) {
   const g = el("g", { class: "cap-icon", transform: `scale(${u})` });
   g.appendChild(el("ellipse", { cx: 0, cy: 11, rx: 15, ry: 4, fill: "rgba(40,20,0,.45)" }));
   g.appendChild(el("path", {
@@ -29,6 +29,14 @@ function castle(u) {
   }));
   g.appendChild(el("path", { d: "M-4 11v-6a4 4 0 0 1 8 0v6z", fill: "#4a2a0a" }));
   g.appendChild(el("path", { d: "M0 -12v-12l9 3.5-9 3.5", fill: "#fff1c4", stroke: "#5a3510", "stroke-width": 1.2 }));
+  // башни замка: целые — золотые, павшие — тёмные (как «жизни» в оригинале)
+  for (let i = 0; i < 3; i++) {
+    const alive = i < towers;
+    g.appendChild(el("rect", {
+      class: `tower ${alive ? "" : "down"}`, x: -10 + i * 7.5, y: 15, width: 5, height: 6, rx: 1,
+      fill: alive ? "#ffd56a" : "#3a2410", stroke: "#2a1606", "stroke-width": 1,
+    }));
+  }
   return g;
 }
 
@@ -190,6 +198,11 @@ export class MapView {
   render(s, { options = new Set(), src = null, colorName, nameOf }) {
     const u = this.u;
     const owners = s.territories;
+    // цена земли живая: 200 → 400 после захвата, замок/руины — 1000
+    for (const [tid, n] of this.labelNodes) {
+      const v = s.values?.[tid];
+      if (v != null && n.val.textContent !== String(v)) n.val.textContent = v;
+    }
     for (const [tid, p] of this.paths) {
       const owner = owners[tid];
       p.style.fill = owner != null ? `url(#kq-g-${colorName(owner)})` : "";
@@ -230,7 +243,7 @@ export class MapView {
     for (const [pid, tid] of Object.entries(s.capitals)) {
       const t = this.byId.get(tid);
       const g = el("g", { transform: `translate(${t.cx} ${t.cy})` });
-      g.appendChild(castle(u));
+      g.appendChild(castle(u, s.towers?.[pid] ?? 3));
       const nick = String(nameOf(pid)).slice(0, 14);
       const wpx = (nick.length * 5.2 + 10) * u;
       const plate = el("g", { transform: `translate(0 ${-30 * u})` });
