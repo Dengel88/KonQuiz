@@ -9,7 +9,13 @@ const HINTS = {
   freeze: { title: "+10 с", cost: 20, icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 2v20M3.3 7l17.4 10M3.3 17 20.7 7"/><path d="m9 4 3 2 3-2M9 20l3-2 3 2"/></svg>' },
   radar: { title: "Зал", cost: 30, icon: '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="3" y="12" width="4" height="9" rx="1"/><rect x="10" y="5" width="4" height="16" rx="1"/><rect x="17" y="9" width="4" height="12" rx="1"/></svg>' },
 };
-const RATES = [[1, "👍", "Нравится"], [0, "😐", "Средне"], [-1, "👎", "Не нравится"]];
+const ICON = (d) => `<svg class="ico-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">${d}</svg>`;
+const RATES = [
+  [1, ICON('<path d="M7 11v9H4v-9zM7 11l4-7a2 2 0 0 1 3 2l-1 4h5a2 2 0 0 1 2 2.3l-1.2 6A2 2 0 0 1 16.8 20H7"/>'), "Нравится"],
+  [0, ICON('<path d="M5 12h14"/>'), "Средне"],
+  [-1, ICON('<path d="M7 13V4H4v9zM7 13l4 7a2 2 0 0 0 3-2l-1-4h5a2 2 0 0 0 2-2.3l-1.2-6A2 2 0 0 0 16.8 4H7"/>'), "Не нравится"],
+];
+const BOT_MARK = `<svg class="bot-mark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-label="бот"><circle cx="12" cy="12" r="3.2"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1 7 17M17 7l2.1-2.1"/></svg>`;
 
 const ui = {
   me: null,          // мой tg_id
@@ -371,7 +377,7 @@ function fitMap(s, options) {
   const svg = $("map"), sheet = $("m-sheet");
   const top = svg.getBoundingClientRect().top - $("scr-match").getBoundingClientRect().top;
   const visH = sheet.hidden ? undefined : sheet.offsetTop - top - 6;
-  ui.map.fit(ids, visH);
+  ui.map.fit(ids, visH, sheet.hidden ? 0 : 40);
 }
 
 // Трекер раундов: этап + 5 ячеек, в каждой — полоски очерёдности ходов цветами игроков
@@ -423,14 +429,14 @@ function renderHud(s) {
     c.root.classList.toggle("dead", p.eliminated);
     c.realm.textContent = realmOf(pid) || "без столицы";
     c.realm.classList.toggle("none", !realmOf(pid));
-    c.mark.textContent = s.answers[pid] ? "✓" : !p.connected ? "⌁" : p.is_bot ? "⚙" : "";
+    c.mark.innerHTML = s.answers[pid] ? "✓" : !p.connected ? "⌁" : p.is_bot ? BOT_MARK : "";
     c.count.innerHTML = `${ownedBy(pid).length}<small>зем.</small>${s.capitals[pid] != null ? `<b class="cap-dot" title="Замок: башен ${s.towers?.[pid] ?? 0}"></b><small class="towers">${"♜".repeat(s.towers?.[pid] ?? 0)}</small>` : ""}`;
     odometer(c.odo, liveScore(pid));
   }
 }
 
 function odometer(node, value) {
-  const digits = String(value).padStart(4, "0");
+  const digits = String(value).padStart(4, " ");  // без «0600»: пустые ячейки скрыты
   node.setAttribute("aria-label", `${value} очков`);
   if (node.children.length !== digits.length) {
     node.innerHTML = [...digits].map(() =>
@@ -438,7 +444,9 @@ function odometer(node, value) {
     ).join("");
   }
   [...digits].forEach((d, i) => {
-    node.children[i].firstChild.style.transform = `translateY(${-d * 10}%)`;
+    const col = node.children[i];
+    col.classList.toggle("blank", d === " ");
+    if (d !== " ") col.firstChild.style.transform = `translateY(${-d * 10}%)`;
   });
 }
 
@@ -570,13 +578,14 @@ function renderReveal(r) {
     }).join("");
   } else {
     $("q-options").hidden = true;
-    html += `<div class="reveal-correct">${fmt(r.correct)}</div><div class="reveal-list">`;
+    const fa = (n) => (r.is_year ? String(n) : fmt(n));
+    html += `<div class="reveal-correct">${fa(r.correct)}</div><div class="reveal-list">`;
     const order = r.ranking || entries.map(([p]) => +p);
     html += order.map((pid) => {
       const v = r.answers[pid];
       const diff = Math.abs(v - r.correct);
       return `<div class="reveal-row ${pid === r.winner ? "win" : ""}">${shield(pid)}${esc(nameOf(pid))}
-        <span class="val">${fmt(v)} <small class="muted">(${diff === 0 ? "точно!" : "±" + fmt(diff)})</small></span></div>`;
+        <span class="val">${fa(v)} <small class="muted">(${diff === 0 ? "точно!" : "±" + fmt(diff)})</small></span></div>`;
     }).join("");
     html += "</div>";
   }
@@ -641,7 +650,7 @@ function showEnd(final) {
     const p = s?.players[r.tg_id];
     return `<div class="card place ${r.tg_id === ui.me ? "me" : ""}" style="--c:${colorOf(r.tg_id)}">
       <span class="num">${r.place}</span>${shield(r.tg_id, r.territories)}
-      <div class="place-name">${esc(r.tg_id === ui.me ? "Вы" : p?.username || r.tg_id)}${r.is_bot ? " ⚙" : ""}
+      <div class="place-name">${esc(r.tg_id === ui.me ? "Вы" : p?.username || r.tg_id)}${r.is_bot ? " " + BOT_MARK : ""}
         ${realmOf(r.tg_id) ? `<small>${esc(realmOf(r.tg_id))}</small>` : ""}</div>
       <div class="score"><b>${fmt(r.score)}</b><small>${r.territories} зем.${s?.capitals[r.tg_id] != null ? " + замок" : s?.players[r.tg_id]?.eliminated ? " · замок пал" : ""}</small></div></div>`;
   }).join("");
@@ -762,6 +771,18 @@ $("q-rate").addEventListener("click", async (e) => {
 });
 
 // ---------------------------------------------------------------- старт
+
+// Telegram: safe-area (шапка «Закрыть/⋯» в fullscreen, полоска жестов) и стабильная высота webview
+function syncTgInsets() {
+  const st = document.documentElement.style;
+  const sa = tg?.safeAreaInset || {}, ca = tg?.contentSafeAreaInset || {};
+  st.setProperty("--tg-safe-top", `${sa.top || 0}px`);
+  st.setProperty("--tg-safe-bottom", `${sa.bottom || 0}px`);
+  st.setProperty("--tg-content-top", `${ca.top || 0}px`);
+  if (tg?.viewportStableHeight) st.setProperty("--tg-vh", `${tg.viewportStableHeight}px`);
+}
+for (const ev of ["safeAreaChanged", "contentSafeAreaChanged", "viewportChanged"]) tg?.onEvent?.(ev, syncTgInsets);
+syncTgInsets();
 
 tg?.ready();
 tg?.expand();

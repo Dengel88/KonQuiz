@@ -100,6 +100,7 @@ export class MapView {
       <linearGradient id="kq-sheen" x1="0" y1="0" x2="0" y2="1">
         <stop offset="0" stop-color="#fff" stop-opacity=".32"/><stop offset=".45" stop-color="#fff" stop-opacity="0"/>
       </linearGradient>
+      <radialGradient id="kq-coin" cx="40%" cy="35%" r="70%"><stop offset="0" stop-color="#fff4c8"/><stop offset=".55" stop-color="#f2c45a"/><stop offset="1" stop-color="#b87818"/></radialGradient>
       <filter id="kq-blur-l" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="${7 * u}"/></filter>
       <filter id="kq-blur-s" x="-10%" y="-10%" width="120%" height="120%"><feGaussianBlur stdDeviation="${2.2 * u}"/></filter>
       ${Object.entries(PALETTE).map(([name, [hi, mid, lo]]) => `
@@ -158,13 +159,15 @@ export class MapView {
     this.labelNodes = new Map();
     for (const t of data.territories) {
       const g = el("g", { transform: `translate(${t.cx} ${t.cy})` });
-      const val = el("text", { class: "terr-val", y: 1 * u, "font-size": 11 * u });
+      // цена — монета-жетон, а не голый текст
+      const coin = el("circle", { class: "terr-coin", r: 8.5 * u, cy: -2.6 * u, "stroke-width": .9 * u });
+      const val = el("text", { class: "terr-val", y: 1 * u, "font-size": 8 * u });
       val.textContent = t.base_points;
-      const name = el("text", { class: "terr-name", y: 11 * u, "font-size": 7.5 * u });
+      const name = el("text", { class: "terr-name", y: 14 * u, "font-size": 7.5 * u });
       name.textContent = t.name;
-      g.append(val, name);
+      g.append(coin, val, name);
       this.labels.appendChild(g);
-      this.labelNodes.set(t.territory_id, { val, name });
+      this.labelNodes.set(t.territory_id, { g, val, name });
     }
 
     this.prevOwners = null;
@@ -202,6 +205,8 @@ export class MapView {
     for (const [tid, n] of this.labelNodes) {
       const v = s.values?.[tid];
       if (v != null && n.val.textContent !== String(v)) n.val.textContent = v;
+      // на клетке с замком подписи прячем — иначе «Сев[башня]Запад»
+      n.g.classList.toggle("label-under-castle", Object.values(s.capitals || {}).includes(+tid));
     }
     for (const [tid, p] of this.paths) {
       const owner = owners[tid];
@@ -214,7 +219,7 @@ export class MapView {
         this.drop(tid, colorName(owner));
       }
       const lbl = this.labelNodes.get(tid);
-      lbl.val.style.display = owner == null ? "" : "none";
+      // цена видна и на занятых землях: по ней видно, куда выгодно бить (200 / 400 / 1000)
       lbl.name.classList.toggle("on-color", owner != null);
     }
     this.prevOwners = { ...owners };
@@ -263,11 +268,11 @@ export class MapView {
    * «Камера»: плавно вписать регионы ids (или всю карту) в верхнюю полосу высотой visH px —
    * ниже может лежать листок вопроса. На телефоне это заодно делает мелкие регионы крупнее.
    */
-  fit(ids, visH) {
+  fit(ids, visH, topPad = 0) {
     const { width: W, height: H } = this.svg.getBoundingClientRect();
     if (!W || !H) return;
     visH = Math.max(100, Math.min(H, visH ?? H));
-    const key = `${(ids || []).join(",")}|${Math.round(W)}x${Math.round(H)}|${Math.round(visH)}`;
+    const key = `${(ids || []).join(",")}|${Math.round(W)}x${Math.round(H)}|${Math.round(visH)}|${topPad}`;
     if (key === this.fitKey) return;
     this.fitKey = key;
 
@@ -279,16 +284,19 @@ export class MapView {
       const m = 26 * this.u;  // поле вокруг — чтобы влезли значки и таблички с никами
       R = { x: x0 - m, y: y0 - m * 1.6, w: x1 - x0 + 2 * m, h: y1 - y0 + m * 2.6 };
     }
-    const kFull = Math.min(W / this.full.w, visH / this.full.h);
-    const k = Math.min(W / R.w, visH / R.h, kFull * 2.6);  // px на единицу карты; не больше ×2.6
+    const avail = Math.max(80, visH - topPad);  // сверху может лежать компактный HUD
+    const kFull = Math.min(W / this.full.w, avail / this.full.h);
+    const k = Math.min(W / R.w, avail / R.h, kFull * 2.6);  // px на единицу карты; не больше ×2.6
     const cx = R.x + R.w / 2, cy = R.y + R.h / 2;
-    this.animateViewBox([cx - W / k / 2, cy - visH / k / 2, W / k, H / k]);
+    this.animateViewBox([cx - W / k / 2, cy - (topPad + avail / 2) / k, W / k, H / k]);
   }
 
   animateViewBox(to) {
     const from = [...this.vb];
     const t0 = performance.now(), dur = 550;
     cancelAnimationFrame(this.vbAnim);
+    const zoom = this.full.w / to[2];
+    this.svg.classList.toggle("zoomed", zoom > 1.6);
     if (document.hidden || matchMedia("(prefers-reduced-motion: reduce)").matches) {
       this.vb = to;  // в фоне rAF не тикает — ставим сразу
       return this.svg.setAttribute("viewBox", to.join(" "));
@@ -299,7 +307,10 @@ export class MapView {
       this.vb = from.map((v, i) => v + (to[i] - v) * e);
       this.svg.setAttribute("viewBox", this.vb.join(" "));
       if (t < 1) this.vbAnim = requestAnimationFrame(step);
+      else this.moveEnd = setTimeout(() => this.svg.classList.remove("moving"), 120);
     };
+    clearTimeout(this.moveEnd);
+    this.svg.classList.add("moving");
     this.vbAnim = requestAnimationFrame(step);
   }
 

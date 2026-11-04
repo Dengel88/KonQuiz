@@ -300,6 +300,7 @@ class MatchEngine:
             "options": cq.get("options"),
             "correct": cq["correct"],
             "fact": cq.get("fact"),
+            "is_year": cq.get("is_year", False),  # годы показываем без разделителя: «1896», не «1 896»
             "answers": {str(pid): a["value"] for pid, a in s.answers.items()},
             **extra,
         }

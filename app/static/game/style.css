@@ -13,19 +13,21 @@
   --gold-dark: #8a5a14;
   --text: #f4e6c4;
   --text-2: #cdb286;
-  --text-3: #8f7552;
+  --text-3: #a88a62;  /* контраст ≥ 5:1 на --bg */
   --good: #58c24a;
   --bad: #e0453a;
   --radius: 14px;
   --font: "Philosopher", Georgia, serif;
   --font-num: "PT Serif", Georgia, serif;
   --font-title: "Ruslan Display", "Philosopher", serif;
-  --safe-b: env(safe-area-inset-bottom, 0px);
+  /* safe-area: max из CSS env и того, что сообщает Telegram (tg.safeAreaInset / contentSafeAreaInset) */
+  --safe-b: max(env(safe-area-inset-bottom, 0px), var(--tg-safe-bottom, 0px));
+  --safe-t: calc(max(env(safe-area-inset-top, 0px), var(--tg-safe-top, 0px)) + var(--tg-content-top, 0px));
   --gold-text: linear-gradient(#fff4c8, #f5c65a 45%, #b87818);
 }
 
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-html, body { height: 100%; margin: 0; }
+html, body { height: var(--tg-vh, 100dvh); margin: 0; }
 body {
   font: 16px/1.35 var(--font);
   color: var(--text);
@@ -59,7 +61,10 @@ body[data-screen="lobby"] #bg-video, body[data-screen="search"] #bg-video { opac
 [hidden] { display: none !important; }
 .muted { color: var(--text-3); }
 
-.screen { height: 100%; display: flex; flex-direction: column; padding: 16px 16px calc(16px + var(--safe-b)); gap: 12px; }
+.screen { height: 100%; display: flex; flex-direction: column; padding: calc(16px + var(--safe-t)) 16px calc(16px + var(--safe-b)); gap: 12px; }
+/* flex не должен сжимать кнопку «В бой» и карточки до 28 px — экраны лобби/итогов прокручиваются */
+#scr-lobby > *, #scr-end > *, #scr-search > * { flex-shrink: 0; }
+#scr-end { overflow-y: auto; }
 
 .card {
   background: linear-gradient(rgba(58, 36, 18, .92), rgba(36, 22, 11, .94));
@@ -84,7 +89,10 @@ body[data-screen="lobby"] #bg-video, body[data-screen="search"] #bg-video { opac
   background: linear-gradient(#ffe08a, #f2a93a 48%, #d9831c 52%, #b8650f);
   box-shadow: 0 3px 0 #6b3a06, 0 0 24px rgba(255, 170, 60, .35), inset 0 1px 0 rgba(255, 255, 255, .6);
   font-size: 20px; text-transform: uppercase; letter-spacing: .08em;
+  min-height: 52px;
 }
+/* «В бой» всегда под большим пальцем */
+#btn-play { position: sticky; bottom: 0; z-index: 2; }
 .btn-main:active { box-shadow: 0 1px 0 #6b3a06, 0 0 16px rgba(255, 170, 60, .3); }
 .btn-main::after {  /* пробегающий блик */
   content: ""; position: absolute; top: 0; bottom: 0; width: 40%; left: -60%;
@@ -187,7 +195,7 @@ body[data-screen="lobby"] #bg-video, body[data-screen="search"] #bg-video { opac
 }
 
 /* ---------- матч ---------- */
-#scr-match { padding: 8px 8px 0; gap: 6px; position: relative; }
+#scr-match { padding: calc(8px + var(--safe-t)) 8px 0; gap: 6px; position: relative; }
 .topbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 4px; min-height: 38px; }
 .phase {
   font: 700 19px var(--font); line-height: 1.15;
@@ -264,7 +272,16 @@ body[data-screen="lobby"] #bg-video, body[data-screen="search"] #bg-video { opac
 
 /* HUD: карточки игроков */
 .hud { display: flex; gap: 6px; align-items: flex-end; padding: 0 0 calc(8px + var(--safe-b)); transition: opacity .2s; }
-.hud.under-sheet { opacity: 0; pointer-events: none; }
+/* под листком вопроса HUD не прячем — сжимаем в полосу над картой */
+.hud.under-sheet {
+  position: absolute; top: calc(50px + var(--safe-t)); left: 8px; right: 8px; z-index: 4;
+  padding: 0; pointer-events: none; align-items: stretch;
+}
+.hud.under-sheet .pcard-realm, .hud.under-sheet .pcard-count { display: none; }
+.hud.under-sheet .pcard-tab { min-height: 17px; font-size: 11px; padding: 1px 6px; }
+.hud.under-sheet .pcard-body { padding: 1px 6px; justify-content: flex-end; }
+.hud.under-sheet .odo, .hud.under-sheet .pcard.me .odo { font-size: 13px; }
+.hud.under-sheet .pcard.turn { transform: none; }
 .pcard { flex: 1; min-width: 0; border-radius: 10px 10px 8px 8px; overflow: hidden; box-shadow: 0 6px 16px rgba(0, 0, 0, .55); transition: box-shadow .3s, transform .3s; }
 .pcard.me { flex: 1.35; }
 .pcard.turn { box-shadow: 0 0 0 2px var(--amber-2), 0 0 18px rgba(255, 190, 90, .55); transform: translateY(-2px); }
@@ -469,3 +486,19 @@ body[data-screen="lobby"] #bg-video, body[data-screen="search"] #bg-video { opac
 .pcard-count .towers { margin-left: 3px; font-size: 9px; letter-spacing: -1px; color: #ffd56a; text-shadow: 0 0 4px rgba(255, 190, 80, .6); }
 .duel-towers { margin-left: 4px; font-size: 12px; letter-spacing: -1px; color: #ffd56a; }
 .cap-icon .tower.down { opacity: .55; }
+
+/* ---- Итерация 1 UX-аудита ---- */
+/* Камера: пока едет viewBox, блюры не пересчитываем — иначе рывки на слабом Android */
+#map.moving [filter] { filter: none; }
+#map.moving .land-glow { opacity: 0; }
+#map .land-glow { transition: opacity .2s; }
+/* Подписи: в общем виде только цены-жетоны, имена — при наезде; на замке подписи не рисуем */
+#map:not(.zoomed) .terr-name { display: none; }
+.terr-coin { fill: url(#kq-coin); stroke: #6b3a0a; }
+.terr-val { stroke-width: 0 !important; fill: #4a2604; }
+.label-under-castle { display: none; }
+/* Одометр без ведущих нулей: пустые ячейки затемнены */
+.odo-col.blank { opacity: 0; width: 0; }
+/* Иконки вместо эмодзи */
+.ico-svg { width: 15px; height: 15px; flex: none; }
+.bot-mark { display: inline-block; width: 11px; height: 11px; vertical-align: -1px; opacity: .8; }
