@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#120b06">
+<title>KonQuiz</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Philosopher:wght@400;700&family=PT+Serif:wght@700&family=Ruslan+Display&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+</head>
+<body>
+<video id="bg-video" muted loop playsinline autoplay preload="auto" poster="media/bg/lobby.jpg" aria-hidden="true">
+  <source src="media/bg/lobby.mp4" type="video/mp4">
+</video>
+<canvas id="dust" aria-hidden="true"></canvas>
+<div id="app">
+
+  <!-- Лобби -->
+  <section class="screen" id="scr-lobby">
+    <div class="lobby-hero">
+      <div class="crest" aria-hidden="true"></div>
+      <h1 class="logo">КонКвиз</h1>
+      <p class="tagline">Знание — оружие. Карта — награда.</p>
+    </div>
+    <div class="card profile">
+      <div class="profile-row">
+        <div class="profile-name" id="lobby-name">…</div>
+        <div class="stats">
+          <span class="stat"><i class="ico ico-gold"></i><b id="lobby-gold">—</b></span>
+          <span class="stat"><i class="ico ico-xp"></i><b id="lobby-xp">—</b></span>
+        </div>
+      </div>
+      <div class="hint-stock" id="lobby-hints"></div>
+    </div>
+
+    <div class="section-title">Поле битвы</div>
+    <div class="maps" id="lobby-maps" role="radiogroup" aria-label="Карта"></div>
+    <div class="section-title">Тема вопросов</div>
+    <div class="topics" id="lobby-topics" role="radiogroup" aria-label="Тема"></div>
+
+    <button class="btn btn-main" id="btn-play">В бой</button>
+    <div class="card fact-card" id="lobby-fact">
+      <div class="fact-head"><span class="fact-title">Интересный факт</span><button class="btn-link" data-fact-more>Ещё</button></div>
+      <p class="fact-text" data-fact-text>Нажмите «Ещё» — знания из фактов пригодятся в бою.</p>
+    </div>
+    <details class="rules card">
+      <summary>Как играть</summary>
+      <ol>
+        <li>Ответьте точнее всех на вопрос с числом — первым выберете столицу.</li>
+        <li>Делите нейтральные земли: каждый вопрос — одна земля победителю.</li>
+        <li>5 раундов битв: нападайте на соседей. Верный ответ против неверного — земля ваша. Оба правы — решающий вопрос.</li>
+        <li>В конце: 200 очков за землю, 400 — за удержанную столицу.</li>
+      </ol>
+    </details>
+  </section>
+
+  <!-- Поиск соперников -->
+  <section class="screen" id="scr-search" hidden>
+    <div class="search-box">
+      <div class="hourglass" aria-hidden="true"></div>
+      <h2>Сбор армий</h2>
+      <p id="search-text">Ищем соперников…</p>
+      <div class="search-slots" id="search-slots"></div>
+      <p class="muted" id="search-timer"></p>
+    </div>
+    <div class="card fact-card" id="search-fact">
+      <div class="fact-head"><span class="fact-title">Пока ждём — факт</span><button class="btn-link" data-fact-more>Ещё</button></div>
+      <p class="fact-text" data-fact-text>…</p>
+    </div>
+  </section>
+
+  <!-- Матч -->
+  <section class="screen" id="scr-match" hidden>
+    <header class="topbar">
+      <div class="phase" id="m-phase">…</div>
+      <div class="tracker" id="m-tracker"></div>
+    </header>
+    <div class="fuse"><div class="fuse-fill" id="m-fuse"></div></div>
+    <div class="stage">
+      <div class="banner" id="m-banner" hidden></div>
+      <svg id="map" aria-label="Карта"></svg>
+    </div>
+    <div class="hud" id="m-hud"></div>
+
+    <div class="sheet" id="m-sheet" hidden>
+      <div class="duel" id="q-duel" hidden></div>
+      <div class="sheet-tag" id="q-tag"></div>
+      <div class="q-text" id="q-text"></div>
+      <div class="options" id="q-options"></div>
+      <div class="exact" id="q-exact">
+        <div class="exact-display" id="q-display">0</div>
+        <div class="keypad" id="q-keypad"></div>
+      </div>
+      <div class="q-status" id="q-status"></div>
+      <div class="hints" id="q-hints"></div>
+      <div class="rate" id="q-rate" hidden></div>
+    </div>
+  </section>
+
+  <!-- Итоги -->
+  <section class="screen" id="scr-end" hidden>
+    <h2 class="end-title" id="end-title">Конец войны</h2>
+    <div class="podium" id="end-list"></div>
+    <div class="card rewards" id="end-rewards"></div>
+    <button class="btn btn-main" id="btn-again">Ещё битва</button>
+    <button class="btn btn-ghost" id="btn-home">В лагерь</button>
+  </section>
+
+  <div class="toast" id="toast" hidden></div>
+</div>
+<!-- Ролик «держава основана» — поверх всего, пока сервер держит паузу REALM_REVEAL -->
+<div class="realm-reveal" id="realm-reveal" hidden>
+  <video id="realm-video" playsinline preload="auto"></video>
+  <div class="realm-cap">
+    <small id="realm-kicker">Основана держава</small>
+    <b id="realm-name"></b>
+    <span id="realm-who"></span>
+  </div>
+  <button class="realm-skip" id="realm-skip" type="button">Пропустить</button>
+</div>
+<script type="module" src="js/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KonQuiz — демо-стенд</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  :root { --bg:#14161c; --panel:#1e2129; --text:#e8e8ea; --muted:#8b8f9a; --accent:#f0b429;
+          --red:#e5484d; --blue:#3e8ef7; --green:#30a46c; --yellow:#f5d90a; --purple:#8e4ec6; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:15px/1.4 system-ui, sans-serif; background:var(--bg); color:var(--text); }
+  main { max-width:760px; margin:0 auto; padding:16px; display:grid; gap:12px; }
+  .panel { background:var(--panel); border-radius:10px; padding:12px; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+  button { background:#2c313c; color:var(--text); border:1px solid #3a404c; border-radius:8px; padding:8px 12px; font:inherit; cursor:pointer; }
+  button:hover:not(:disabled) { border-color:var(--accent); }
+  button:disabled { opacity:.4; cursor:default; }
+  input { background:#12141a; color:var(--text); border:1px solid #3a404c; border-radius:8px; padding:8px; font:inherit; width:120px; }
+  #status { display:flex; justify-content:space-between; font-weight:600; }
+  #timer { color:var(--accent); font-variant-numeric:tabular-nums; }
+  #map { display:grid; grid-template-columns:repeat(5,1fr); gap:6px; }
+  .cell { aspect-ratio:1.3; border-radius:8px; padding:6px; font-size:12px; display:flex; flex-direction:column;
+          justify-content:space-between; border:2px solid transparent; background:#2a2e38; cursor:pointer; user-select:none; }
+  .cell.opt { border-color:var(--accent); }
+  .cell.src { outline:3px solid #fff; }
+  .cell .cap { font-size:18px; }
+  .players { display:flex; gap:12px; flex-wrap:wrap; }
+  .dot { display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:4px; }
+  #options button { flex:1 1 45%; text-align:left; }
+  .removed { visibility:hidden; }
+  #log { max-height:180px; overflow:auto; font-size:13px; color:var(--muted); white-space:pre-wrap; }
+  .you { color:var(--accent); }
+</style>
+</head>
+<body>
+<main>
+  <div class="panel row" id="login">
+    <label>ID <input id="uid" type="number" value="1001"></label>
+    <label>Имя <input id="uname" value="tester"></label>
+    <button id="btnBots">Матч с ботами</button>
+    <button id="btnQueue">Найти матч</button>
+  </div>
+  <div class="panel" id="status"><span id="phase">—</span><span id="timer"></span></div>
+  <div class="panel players" id="players"></div>
+  <div class="panel" id="question" hidden>
+    <div id="qtext" style="margin-bottom:8px;font-weight:600"></div>
+    <div class="row" id="options"></div>
+    <div class="row" id="exact"><input id="num" type="number"><button id="send">Ответить</button></div>
+    <div class="row" style="margin-top:8px">
+      <button data-hint="50_50">50/50</button><button data-hint="freeze">Заморозка +10с</button><button data-hint="radar">Радар</button>
+    </div>
+  </div>
+  <div class="panel"><div id="hint" style="margin-bottom:6px"></div><div id="map"></div></div>
+  <div class="panel" id="log"></div>
+</main>
+<script>
+const NAMES = { MATCHMAKING:"Поиск соперников", CAPITAL_SELECTION:"Вопрос за столицу", CAPITAL_PICK:"Выбор столицы",
+  EXPANSION:"Экспансия: вопрос", EXPANSION_PICK:"Экспансия: выбор земли", BATTLE_WAIT:"Выбор атаки",
+  BATTLE_QUESTION:"Битва!", BATTLE_TIEBREAKER:"Тайбрейкер", REVEAL:"Итог", END_GAME:"Конец игры" };
+const $ = id => document.getElementById(id);
+let ws, me, S, MAP = [], src = null, removed = [], radar = null, clockSkew = 0;
+
+const tg = window.Telegram?.WebApp;
+function initData() { return tg?.initData || `dev:${$("uid").value}:${$("uname").value}`; }
+function log(t) { $("log").textContent = t + "\n" + $("log").textContent; }
+function send(o) { ws?.readyState === 1 && ws.send(JSON.stringify({ ...o, phase: S?.phase })); }
+function name(pid) { const p = S.players[pid]; return p ? (p.username || pid) + (+pid === me ? " (вы)" : "") : "—"; }
+
+async function start(withBots) {
+  MAP = (await (await fetch("/api/map")).json()).territories;
+  let q = `init_data=${encodeURIComponent(initData())}`;
+  if (withBots) {
+    const r = await fetch("/api/test/match", { method:"POST", headers:{ "X-Init-Data": initData() } });
+    if (!r.ok) return log("Ошибка: " + (await r.text()));
+    q += "&match_id=" + (await r.json()).match_id;
+  }
+  ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws?${q}`);
+  ws.onmessage = e => handle(JSON.parse(e.data));
+  ws.onclose = e => log(`Соединение закрыто (${e.code}) ${e.reason}`);
+}
+
+function handle(m) {
+  if (m.type === "welcome") { me = m.you; setState(m.state); }
+  else if (m.type === "state") setState(m.state);
+  else if (m.type === "error") log("⚠ " + m.message);
+  else if (m.type === "hint") {
+    if (m.remove) removed = m.remove;
+    if (m.distribution) radar = m.distribution;
+    log(`Подсказка ${m.hint} (оплата: ${m.paid_with === "gold" ? "золото" : "из запаса"})`);
+    render();
+  } else if (m.type === "end") log("Матч завершён");
+}
+
+function setState(s) {
+  if (S?.phase !== s.phase) { removed = []; radar = null; src = null; }
+  if (s.last_result && JSON.stringify(s.last_result) !== JSON.stringify(S?.last_result)) describe(s, s.last_result);
+  clockSkew = s.server_time - Date.now() / 1000;
+  S = s; render();
+}
+
+function describe(s, r) {
+  const n = pid => (s.players[pid]?.username || pid);
+  if (r.kind === "turn_skipped") return log(`${n(r.player)} пропускает ход — некого атаковать`);
+  let t = `❓ ${r.text}\n   Верно: ${r.options ? r.options[r.correct] : r.correct}. Ответы: ` +
+    Object.entries(r.answers).map(([p, v]) => `${n(p)}=${r.options ? r.options[v] : v}`).join(", ");
+  if (r.winner !== undefined) t += `\n   Побеждает: ${n(r.winner)}`;
+  if (r.outcome === "captured") t += `\n   ⚔ ${n(r.battle.attacker)} захватил территорию ${r.battle.target}`;
+  if (r.outcome === "defended") t += `\n   🛡 ${n(r.battle.defender)} удержал территорию ${r.battle.target}`;
+  if (r.outcome === "tiebreaker") t += `\n   Оба правы — тайбрейкер!`;
+  log(t);
+}
+
+function render() {
+  if (!S) return;
+  $("phase").textContent = (NAMES[S.state_name] || S.state_name) + (S.round ? ` · раунд ${S.round}/5` : "");
+  // игроки
+  $("players").innerHTML = Object.values(S.players).map(p =>
+    `<span class="${p.tg_id === me ? "you" : ""}"><span class="dot" style="background:var(--${p.color})"></span>` +
+    `${p.username}${p.is_bot ? " 🤖" : ""}${p.eliminated ? " ☠" : ""} · ${S.territories ? Object.values(S.territories).filter(o => o === p.tg_id).length : 0} зем.` +
+    `${S.final ? " · " + (S.final.results.find(r => r.tg_id === p.tg_id)?.score ?? 0) + " очк." : ""}</span>`).join("");
+  // вопрос
+  const cq = S.current_question, mine = cq && S.question_participants.includes(me), answered = S.answers[me];
+  $("question").hidden = !cq;
+  if (cq) {
+    $("qtext").textContent = cq.text + (mine ? "" : " (вы наблюдаете)");
+    $("options").hidden = cq.q_type !== "CHOICE";
+    $("exact").hidden = cq.q_type !== "EXACT";
+    if (cq.options) $("options").innerHTML = cq.options.map((o, i) =>
+      `<button data-i="${i}" class="${removed.includes(i) ? "removed" : ""}" ${!mine || answered ? "disabled" : ""}>` +
+      `${o}${radar ? ` — ${radar[i]}%` : ""}</button>`).join("");
+    $("send").disabled = !mine || answered;
+    document.querySelectorAll("[data-hint]").forEach(b => b.disabled = !mine || answered);
+  }
+  // подсказка по карте
+  const myTurn = S.state_name === "BATTLE_WAIT" && S.current_turn_tg_id === me;
+  $("hint").textContent = S.picker_tg_id === me ? "Выберите территорию (подсвечены)" :
+    myTurn ? (src ? "Теперь цель — соседняя вражеская" : "Ваш ход: выберите свою территорию-источник") :
+    S.state_name === "BATTLE_WAIT" ? `Атакует ${name(S.current_turn_tg_id)}` :
+    S.battle ? `${name(S.battle.attacker)} атакует ${name(S.battle.defender)}: ${S.battle.source} → ${S.battle.target}` : "";
+  // карта
+  const caps = Object.fromEntries(Object.entries(S.capitals).map(([p, t]) => [t, p]));
+  $("map").innerHTML = MAP.map(t => {
+    const owner = S.territories[t.territory_id], color = owner != null ? `var(--${S.players[owner]?.color})` : "#2a2e38";
+    const opt = S.picker_tg_id === me && S.pick_options.includes(t.territory_id);
+    return `<div class="cell ${opt ? "opt" : ""} ${src === t.territory_id ? "src" : ""}" data-t="${t.territory_id}"
+      style="background:${color}"><b>${t.territory_id}</b><span class="cap">${caps[t.territory_id] ? "★" : ""}</span>${t.name}</div>`;
+  }).join("");
+}
+
+$("map").onclick = e => {
+  const cell = e.target.closest(".cell"); if (!cell || !S) return;
+  const t = +cell.dataset.t;
+  if (S.picker_tg_id === me) return send({ action: "pick", territory: t });
+  if (S.state_name === "BATTLE_WAIT" && S.current_turn_tg_id === me) {
+    if (S.territories[t] === me) { src = t; render(); }
+    else if (src) { send({ action: "attack", source_territory: src, target_territory: t }); src = null; }
+  }
+};
+$("options").onclick = e => { const b = e.target.closest("button"); b && send({ action: "answer", value: +b.dataset.i }); };
+$("send").onclick = () => $("num").value !== "" && send({ action: "answer", value: +$("num").value });
+$("num").onkeydown = e => e.key === "Enter" && $("send").click();
+document.querySelectorAll("[data-hint]").forEach(b => b.onclick = () => send({ use_hint: b.dataset.hint }));
+$("btnBots").onclick = () => start(true);
+$("btnQueue").onclick = () => start(false);
+setInterval(() => {
+  const left = S?.timer_ends_at ? S.timer_ends_at - (Date.now() / 1000 + clockSkew) : null;
+  $("timer").textContent = left != null && left > 0 ? left.toFixed(1) + " с" : "";
+}, 100);
+tg?.ready();
+</script>
+</body>
+</html>

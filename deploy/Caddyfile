@@ -1,0 +1,8 @@
+# Caddy: HTTPS-сертификат Let's Encrypt получает и продлевает сам.
+# На сервере: sudo cp /opt/konquiz/deploy/Caddyfile /etc/caddy/Caddyfile && sudo systemctl reload caddy
+# Работает, только когда A-запись game.synndicate.ru указывает на этот сервер.
+game.synndicate.ru {
+	encode gzip
+	# reverse_proxy сам пробрасывает WebSocket (Upgrade/Connection) — отдельная настройка не нужна
+	reverse_proxy 127.0.0.1:8000
+}

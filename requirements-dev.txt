@@ -1,0 +1,7 @@
+-r requirements.txt
+pytest>=8.2
+pytest-asyncio>=0.23
+aiosqlite>=0.20
+fakeredis>=2.23
+httpx>=0.27
+shapely>=2.0  # только для tools/gen_map_russia.py
