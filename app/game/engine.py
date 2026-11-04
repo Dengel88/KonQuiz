@@ -53,6 +53,7 @@ class MatchEngine:
             topic=self.topic.id,
             map_id=self.map.id,
             territories={tid: None for tid in self.map.territories},
+            rounds_total=self.settings.battle_rounds,
         )
         self.bus = EventBus()
         self.inbox: asyncio.Queue[tuple] = asyncio.Queue()
@@ -173,6 +174,7 @@ class MatchEngine:
         s.question_participants = []
         s.picker_tg_id = None
         s.pick_options = []
+        s.attack_targets = []
         self.current = new
         await new.on_enter()
 
@@ -306,54 +308,160 @@ class MatchEngine:
 
     # ------------------------------------------------------------ бой и ходы
 
+    # ---- замки (классика: случайно, не вплотную, 1000 очков и 3 башни)
+
+    def assign_capitals(self) -> list[tuple[int, int]]:
+        """Случайные столицы, не граничащие друг с другом (если карта позволяет)."""
+        players = self.state.active_players()
+        tids = list(self.map.territories)
+        for _ in range(500):
+            picked = self.rng.sample(tids, len(players))
+            if all(b not in self.map.neighbors(a) for a in picked for b in picked if a != b):
+                break
+        return list(zip(players, picked))
+
+    def place_capital(self, pid: int, tid: int) -> None:
+        s, cfg = self.state, self.settings
+        s.territories[tid] = pid
+        s.capitals[pid] = tid
+        s.values[tid] = cfg.capital_value
+        s.towers[pid] = cfg.capital_towers
+        s.players[pid].score += cfg.capital_value
+
+    def take_land(self, pid: int, tid: int) -> None:
+        """Экспансия: свободная земля стоит base_points (200)."""
+        s = self.state
+        value = self.map.territories[tid].base_points
+        s.territories[tid] = pid
+        s.values[tid] = value
+        s.players[pid].score += value
+
+    def full_ranking(self, participants: list[int]) -> list[int]:
+        """Ответившие по точности, за ними — молчавшие в случайном порядке."""
+        ranked = self.rank_exact()
+        rest = [p for p in participants if p not in ranked]
+        self.rng.shuffle(rest)
+        return ranked + rest
+
+    # ---- бой и ходы
+
+    def is_castle(self, tid: int) -> bool:
+        return tid in self.state.capitals.values()
+
+    def attack_targets(self, pid: int) -> list[int]:
+        """Раунд 1 — только соседние земли без замков; средние — соседние вместе с замками;
+        последний — любая вражеская земля. Если по правилу раунда бить некуда — ослабляем правило,
+        чтобы ход не сгорел впустую."""
+        s = self.state
+        enemy = {t for t, o in s.territories.items() if o is not None and o != pid}
+        near = {n for t in s.owned_by(pid) for n in self.map.neighbors(t)} & enemy
+        if s.round >= s.rounds_total:
+            return sorted(enemy)
+        if s.round <= 1:
+            no_castles = {t for t in near if not self.is_castle(t)}
+            if no_castles:
+                return sorted(no_castles)
+        return sorted(near or enemy)
+
     def valid_attacks(self, pid: int) -> list[tuple[int, int]]:
-        t = self.state.territories
-        return [
-            (src, tgt)
-            for src in self.state.owned_by(pid)
-            for tgt in self.map.neighbors(src)
-            if t[tgt] not in (None, pid)
-        ]
+        return [(self.pick_source(pid, t), t) for t in self.attack_targets(pid)]
+
+    def pick_source(self, pid: int, tgt: int) -> int:
+        """Откуда «летит» стрела: соседняя своя земля (лучше не замок), иначе — замок/любая своя."""
+        s = self.state
+        own = s.owned_by(pid)
+        near = [t for t in own if tgt in self.map.neighbors(t)]
+        if near:
+            return min(near, key=lambda t: (self.is_castle(t), t))
+        cap = s.capitals.get(pid)
+        return cap if cap is not None else own[0]
 
     def start_battles(self) -> st.GameState:
         s = self.state
-        s.turn_order = s.active_players()
-        self.rng.shuffle(s.turn_order)
-        s.round = 1
-        s.turn_index = -1
+        s.rounds_total = self.settings.battle_rounds
+        s.round = 0
+        s.turn_index = len(s.turn_order)  # next_turn сразу откроет раунд 1
+        s.turn_order = []
         return self.next_turn()
+
+    def _open_round(self) -> None:
+        """Раунды 1..N-1 — случайный порядок, последний — по очкам: лидер бьёт первым."""
+        s = self.state
+        s.round += 1
+        s.turn_index = 0
+        order = s.active_players()
+        if s.round >= s.rounds_total:
+            order.sort(key=lambda p: (-s.players[p].score, self.rng.random()))
+        else:
+            self.rng.shuffle(order)
+        s.turn_order = order
 
     def next_turn(self) -> st.GameState:
         s = self.state
         if len(s.active_players()) <= 1:
-            return st.EndGameState(self)
-        for _ in range(len(s.turn_order) * (self.settings.battle_rounds + 1)):
+            return self.end_game()
+        while True:
             s.turn_index += 1
             if s.turn_index >= len(s.turn_order):
-                s.turn_index = 0
-                s.round += 1
-            if s.round > self.settings.battle_rounds:
-                s.round = self.settings.battle_rounds
-                break
+                if s.round >= s.rounds_total:
+                    return self.end_game()
+                self._open_round()
             pid = s.turn_order[s.turn_index]
             if not s.players[pid].eliminated:
                 s.current_turn_tg_id = pid
                 return st.BattleWaitState(self, pid)
+
+    def end_game(self) -> st.GameState:
+        """Ничьей не бывает: равенство на первом месте решает угадайка."""
+        s = self.state
+        s.current_turn_tg_id = None
+        alive = [p for p in s.players.values() if not p.eliminated]
+        top = max(p.score for p in alive)
+        tied = [p.tg_id for p in alive if p.score == top]
+        if len(tied) > 1:
+            return st.FinalTiebreakerState(self, tied)
         return st.EndGameState(self)
 
-    def finish_battle(self, captured: bool) -> None:
-        s = self.state
+    def finish_battle(self, captured: bool, defense_bonus: bool = False) -> Callable[[], st.GameState]:
+        """Применить итог боя. Возвращает, что будет после паузы: следующий ход или продолжение осады."""
+        s, cfg = self.state, self.settings
         b = s.battle
-        if captured:
-            s.territories[b["target"]] = b["attacker"]
-            if s.capitals.get(b["defender"]) == b["target"]:
-                del s.capitals[b["defender"]]
-            if not s.owned_by(b["defender"]):
-                s.players[b["defender"]].eliminated = True
-        if s.last_result is not None:
-            s.last_result["battle"] = dict(b)
-            s.last_result["outcome"] = "captured" if captured else "defended"
+        atk, dfd, tgt = b["attacker"], b["defender"], b["target"]
+        A, D = s.players[atk], s.players[dfd]
+        res = s.last_result if s.last_result is not None else {}
+        res["battle"] = dict(b)
+
+        if captured and s.capitals.get(dfd) == tgt:
+            s.towers[dfd] -= 1
+            if s.towers[dfd] > 0:
+                res.update(outcome="tower_down", towers_left=s.towers[dfd])
+                return lambda: st.BattleQuestionState(self)  # осада продолжается, пока атакующий не ошибётся
+            # последняя башня: забираем всё — очки и земли, соперник выбывает
+            gained = D.score
+            A.score += gained
+            D.score = 0
+            for t in s.owned_by(dfd):
+                s.territories[t] = atk
+            del s.capitals[dfd]
+            D.eliminated = True
+            res.update(outcome="castle_destroyed", points=gained, towers_left=0)
+        elif captured:
+            value = s.values.get(tgt, 0)
+            gain = max(cfg.capture_value, value)  # руины замка стоят 1000 — и отбирают 1000
+            A.score += gain
+            D.score -= value
+            s.values[tgt] = gain
+            s.territories[tgt] = atk
+            if not s.owned_by(dfd):
+                D.eliminated = True
+            res.update(outcome="captured", points=gain, lost=value)
+        else:
+            if defense_bonus:
+                D.score += cfg.defense_bonus
+                res["bonus"] = cfg.defense_bonus
+            res["outcome"] = "defended"
         s.battle = None
+        return self.next_turn
 
     # ------------------------------------------------------------ подсказки
 
@@ -405,12 +513,9 @@ class MatchEngine:
         s = self.state
         s.current_turn_tg_id = None
         owned = {pid: s.owned_by(pid) for pid in s.players}
-        for pid, p in s.players.items():
-            p.score = sum(self.map.territories[t].base_points for t in owned[pid])
-            if pid in s.capitals:
-                p.score += self.settings.capital_bonus
-
-        ranked = sorted(s.players.values(), key=lambda p: (-p.score, -len(owned[p.tg_id]), self.rng.random()))
+        # очки копились по ходу матча; при равенстве выше — победитель финальной угадайки
+        ranked = sorted(s.players.values(), key=lambda p: (
+            -p.score, p.tg_id != s.winner_tg_id, -len(owned[p.tg_id]), self.rng.random()))
         results = []
         for place, p in enumerate(ranked, start=1):
             gold, xp = (0, 0) if p.is_bot else PLACE_REWARDS.get(place, (0, 0))

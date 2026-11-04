@@ -57,7 +57,7 @@ class MatchmakingState(GameState):
 
     async def check_transitions(self) -> GameState | None:
         if len(self.s.players) >= self.e.settings.players_per_match:
-            return CapitalQuestionState(self.e, self.s.active_players())
+            return CapitalRevealState(self.e, self.e.assign_capitals())
         return None
 
 
@@ -121,27 +121,17 @@ class QuestionState(GameState):
     async def resolve(self) -> GameState: ...
 
 
-class CapitalQuestionState(QuestionState):
-    name = "CAPITAL_SELECTION"
-    q_type = QType.EXACT
-
-    async def resolve(self) -> GameState:
-        ranking = self.e.rank_exact()
-        # никто не ответил — столицы всё равно нужны, выбираем случайно
-        winner = ranking[0] if ranking else self.e.rng.choice(self.participants)
-        self.e.question_result("capital_question", winner=winner, ranking=ranking)
-        return RevealState(self.e, lambda: CapitalPickState(self.e, winner))
-
-
 class ExpansionQuestionState(QuestionState):
     name = "EXPANSION"
     q_type = QType.EXACT
 
     async def resolve(self) -> GameState:
-        ranking = self.e.rank_exact()
-        winner = ranking[0] if ranking else self.e.rng.choice(self.participants)
-        self.e.question_result("expansion_question", winner=winner, ranking=ranking)
-        return RevealState(self.e, lambda: ExpansionPickState(self.e, winner))
+        # 1-е место берёт 2 земли, 2-е — одну, 3-е ничего (при равной точности — кто быстрее)
+        ranking = self.e.full_ranking(self.participants)
+        queue = [pid for pid, n in zip(ranking, self.e.settings.expansion_picks) for _ in range(n)]
+        self.e.question_result("expansion_question", winner=ranking[0], ranking=self.e.rank_exact(),
+                               picks={str(pid): queue.count(pid) for pid in dict.fromkeys(queue)})
+        return RevealState(self.e, lambda: ExpansionPickState(self.e, queue))
 
 
 class BattleQuestionState(QuestionState):
@@ -164,8 +154,8 @@ class BattleQuestionState(QuestionState):
             self.e.question_result("battle_question", outcome="tiebreaker")
             return RevealState(self.e, lambda: BattleTiebreakerState(self.e))
         self.e.question_result("battle_question")
-        self.e.finish_battle(captured=a_ok and not d_ok)
-        return RevealState(self.e, self.e.next_turn)
+        nxt = self.e.finish_battle(captured=a_ok and not d_ok, defense_bonus=d_ok and not a_ok)
+        return RevealState(self.e, nxt)
 
 
 class BattleTiebreakerState(QuestionState):
@@ -181,8 +171,21 @@ class BattleTiebreakerState(QuestionState):
         b = self.s.battle
         winner = ranking[0] if ranking else b["defender"]  # никто не ответил — защитник удержал
         self.e.question_result("battle_tiebreaker", winner=winner, ranking=ranking)
-        self.e.finish_battle(captured=winner == b["attacker"])
-        return RevealState(self.e, self.e.next_turn)
+        nxt = self.e.finish_battle(captured=winner == b["attacker"])
+        return RevealState(self.e, nxt)
+
+
+class FinalTiebreakerState(QuestionState):
+    """Очков поровну на первом месте — угадайка решает, кто победил. Ничьей не бывает."""
+
+    name = "FINAL_TIEBREAKER"
+    q_type = QType.EXACT
+
+    async def resolve(self) -> GameState:
+        ranking = self.e.full_ranking(self.participants)
+        self.s.winner_tg_id = ranking[0]
+        self.e.question_result("final_tiebreaker", winner=ranking[0], ranking=self.e.rank_exact())
+        return RevealState(self.e, lambda: EndGameState(self.e))
 
 
 # ---------------------------------------------------------------- выбор территории
@@ -227,34 +230,16 @@ class PickState(GameState):
         return self.next_state()
 
 
-class CapitalPickState(PickState):
-    name = "CAPITAL_PICK"
-
-    def options(self) -> list[int]:
-        taken = set(self.s.capitals.values())
-        near_capital = {n for c in taken for n in self.e.map.neighbors(c)}
-        free = self.s.neutral()
-        # столицы не ставим вплотную друг к другу, если есть выбор
-        return [t for t in free if t not in near_capital] or free
-
-    def apply(self, tid: int) -> None:
-        self.s.territories[tid] = self.picker
-        self.s.capitals[self.picker] = tid
-
-    def next_state(self) -> GameState:
-        return RealmRevealState(self.e, self.after_realm)
-
-    def after_realm(self) -> GameState:
-        without = [p for p in self.s.active_players() if p not in self.s.capitals]
-        if len(without) >= 2:
-            return CapitalQuestionState(self.e, without)
-        if len(without) == 1:
-            return CapitalPickState(self.e, without[0])  # последний выбирает без вопроса
-        return ExpansionQuestionState(self.e, self.s.active_players())
-
-
 class ExpansionPickState(PickState):
     name = "EXPANSION_PICK"
+
+    def __init__(self, engine: MatchEngine, queue: list[int]):
+        super().__init__(engine, queue[0])
+        self.queue = queue
+
+    async def on_enter(self) -> None:
+        self.s.pick_queue = self.queue[1:]
+        await super().on_enter()
 
     def options(self) -> list[int]:
         free = set(self.s.neutral())
@@ -262,28 +247,34 @@ class ExpansionPickState(PickState):
         return sorted(adjacent or free)
 
     def apply(self, tid: int) -> None:
-        self.s.territories[tid] = self.picker
+        self.e.take_land(self.picker, tid)
 
     def next_state(self) -> GameState:
-        if self.s.neutral():
-            return ExpansionQuestionState(self.e, self.s.active_players())
-        return self.e.start_battles()
+        self.s.pick_queue = []
+        if not self.s.neutral():
+            return self.e.start_battles()
+        if len(self.queue) > 1:
+            return ExpansionPickState(self.e, self.queue[1:])
+        return ExpansionQuestionState(self.e, self.s.active_players())
 
 
 # ---------------------------------------------------------------- бой
 
 class BattleWaitState(GameState):
+    """Ход атакующего: тап по вражеской земле. Откуда бить — сервер выберет сам (клиент может подсказать)."""
+
     name = "BATTLE_WAIT"
 
     def __init__(self, engine: MatchEngine, attacker: int):
         super().__init__(engine)
         self.attacker = attacker
-        self.attacks: list[tuple[int, int]] = []
+        self.targets: list[int] = []
         self.chosen: tuple[int, int] | None = None
 
     async def on_enter(self) -> None:
-        self.attacks = self.e.valid_attacks(self.attacker)
-        if self.attacks:
+        self.targets = self.e.attack_targets(self.attacker)
+        self.s.attack_targets = list(self.targets)
+        if self.targets:
             self.e.set_timer(self.e.settings.attack_choice_time)
 
     async def on_action(self, pid: int, payload: dict[str, Any], ts: float) -> None:
@@ -291,21 +282,25 @@ class BattleWaitState(GameState):
             raise GameError("Сейчас ход другого игрока")
         if payload.get("action", "attack") != "attack":
             raise GameError("Ожидается выбор атаки")
-        src, tgt = payload.get("source_territory"), payload.get("target_territory")
+        tgt = payload.get("target_territory")
         t = self.s.territories
-        if src not in t or t[src] != pid:
-            raise GameError("Атаковать можно только со своей территории")
         if tgt not in t or t[tgt] in (None, pid):
             raise GameError("Цель должна принадлежать противнику")
-        if tgt not in self.e.map.neighbors(src):
-            raise GameError("Цель не граничит с выбранной территорией")
+        if tgt not in self.targets:
+            if self.s.round <= 1 and self.e.is_castle(tgt):
+                raise GameError("В первом раунде замки атаковать нельзя")
+            raise GameError("Цель не граничит с вашими землями")
+        src = payload.get("source_territory")
+        if src is None or t.get(src) != pid or tgt not in self.e.map.neighbors(src):
+            src = self.e.pick_source(pid, tgt)
         self.chosen = (src, tgt)
 
     async def on_timeout(self) -> None:
-        self.chosen = self.e.rng.choice(self.attacks)
+        tgt = self.e.rng.choice(self.targets)
+        self.chosen = (self.e.pick_source(self.attacker, tgt), tgt)
 
     async def check_transitions(self) -> GameState | None:
-        if not self.attacks:
+        if not self.targets:
             self.s.last_result = {"kind": "turn_skipped", "player": self.attacker}
             return self.e.next_turn()
         if self.chosen is None:
@@ -342,16 +337,34 @@ class RevealState(GameState):
         return self.next_factory() if self.done else None
 
 
-class RealmRevealState(RevealState):
-    """Пауза после выбора столицы: клиент показывает ролик «держава основана»."""
+class CapitalRevealState(GameState):
+    """Замки раздаются по одному: каждый — со своим роликом «держава основана»."""
 
     name = "REALM_REVEAL"
 
+    def __init__(self, engine: MatchEngine, queue: list[tuple[int, int]]):
+        super().__init__(engine)
+        self.queue = queue
+        self.done = False
+
     async def on_enter(self) -> None:
+        pid, tid = self.queue[0]
+        self.e.place_capital(pid, tid)
+        self.s.last_result = {"kind": "capital_assigned", "player": pid, "territory": tid}
         if self.e.settings.realm_reveal_time <= 0:
             self.done = True
         else:
             self.e.set_timer(self.e.settings.realm_reveal_time)
+
+    async def on_timeout(self) -> None:
+        self.done = True
+
+    async def check_transitions(self) -> GameState | None:
+        if not self.done:
+            return None
+        if len(self.queue) > 1:
+            return CapitalRevealState(self.e, self.queue[1:])
+        return ExpansionQuestionState(self.e, self.s.active_players())
 
 
 class EndGameState(GameState):

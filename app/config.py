@@ -38,8 +38,13 @@ class Settings(BaseSettings):
 
     # Правила
     players_per_match: int = 3
-    battle_rounds: int = 5
-    capital_bonus: int = 400
+    # Классика «Конкизтадора» (Honfoglaló → Triviador): см. RULES.md
+    battle_rounds: int = 4
+    capital_value: int = 1000  # стоимость замка; он же — награда за его разрушение
+    capital_towers: int = 3  # башен у замка: каждый выигранный бой роняет одну
+    capture_value: int = 400  # захватчик получает столько, земля начинает стоить столько же
+    defense_bonus: int = 100  # защитник отбился, ответив верно на первый вопрос
+    expansion_picks: tuple[int, ...] = (2, 1)  # сколько земель берут 1-е и 2-е место в угадайке
     match_state_ttl: int = 3600  # сколько держать MatchState в Redis
 
 

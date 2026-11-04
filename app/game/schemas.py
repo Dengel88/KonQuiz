@@ -47,6 +47,13 @@ class MatchState(BaseModel):
     round: int = 0
     last_result: dict | None = None  # итог последнего вопроса/боя — для экрана REVEAL
     final: dict | None = None  # итоги матча (END_GAME)
+    # --- классика Конкизтадора
+    values: dict[int, int] = Field(default_factory=dict)  # territory_id -> текущая стоимость земли
+    towers: dict[int, int] = Field(default_factory=dict)  # tg_id -> сколько башен осталось у замка
+    rounds_total: int = 4  # раундов битвы (клиент рисует трекер)
+    attack_targets: list[int] = Field(default_factory=list)  # куда можно ударить в этот ход
+    pick_queue: list[int] = Field(default_factory=list)  # кто ещё выбирает землю после угадайки
+    winner_tg_id: int | None = None  # победитель финальной угадайки при равенстве очков
 
     def active_players(self) -> list[int]:
         return [pid for pid, p in self.players.items() if not p.eliminated]
