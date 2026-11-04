@@ -430,7 +430,7 @@ function renderHud(s) {
     c.realm.textContent = realmOf(pid) || "без столицы";
     c.realm.classList.toggle("none", !realmOf(pid));
     c.mark.innerHTML = s.answers[pid] ? "✓" : !p.connected ? "⌁" : p.is_bot ? BOT_MARK : "";
-    c.count.innerHTML = `${ownedBy(pid).length}<small>зем.</small>${s.capitals[pid] != null ? `<b class="cap-dot" title="Замок: башен ${s.towers?.[pid] ?? 0}"></b><small class="towers">${"♜".repeat(s.towers?.[pid] ?? 0)}</small>` : ""}`;
+    c.count.innerHTML = `${ownedBy(pid).length}<small>зем.</small>${s.capitals[pid] != null ? `<small class="towers" title="Замок: башен ${s.towers?.[pid] ?? 0}">${"♜".repeat(s.towers?.[pid] ?? 0)}</small>` : ""}`;
     odometer(c.odo, liveScore(pid));
   }
 }
